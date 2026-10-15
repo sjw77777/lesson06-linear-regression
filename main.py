@@ -1,4 +1,4 @@
-```python
+
 # main.py — 연평균기온에 직선을 맞추고 예측한다
 import streamlit as st
 import pandas as pd
@@ -196,4 +196,4 @@ st.caption(
     "100년당 기온 변화량은 회귀 직선의 기울기에 "
     "100을 곱해 계산한 통계적 추세입니다."
 )
-```
+
