@@ -1,128 +1,199 @@
-                       관측일수=("평균기온", "count"),
-        )
+```python
+# main.py — 연평균기온에 직선을 맞추고 예측한다
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+
+DATA_URL = "https://raw.githubusercontent.com/greatsong/modudata/bb860932644270ad1199f10d3e7670e30231bce4/data/seoul.csv"
+
+st.set_page_config(page_title="기온 예측기", page_icon="🌡️", layout="wide")
+st.title("🌡️ 기온 예측기")
+
+
+@st.cache_data
+def load_yearly():
+    df = pd.read_csv(DATA_URL, encoding="utf-8")
+    df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce")
+    df["평균기온"] = pd.to_numeric(df["평균기온"], errors="coerce")
+    df = df.dropna(subset=["날짜", "평균기온"])
+
+    df["연도"] = df["날짜"].dt.year
+    df = df[df["연도"] <= 2025]
+
+    grouped = (
+        df.groupby("연도")["평균기온"]
+        .agg(["mean", "count"])
         .reset_index()
     )
-    yearly = yearly[yearly["관측일수"] >= 300].sort_values("연도")
-    return yearly
+
+    # 관측일이 300일 이상인 연도만 사용
+    valid = grouped["count"] >= 300
+
+    return grouped[valid].rename(
+        columns={"mean": "연평균기온"}
+    )
 
 
-try:
-    yearly = load_yearly_data()
-except Exception as e:
-    st.error("기온 데이터를 불러오지 못했습니다. 인터넷 연결이나 데이터 주소를 확인해 주세요.")
-    st.exception(e)
-    st.stop()
+yearly = load_yearly()
 
 if len(yearly) < 2:
-    st.error("회귀 직선을 만들 수 있는 연도 데이터가 충분하지 않습니다.")
+    st.error("회귀 분석에 필요한 데이터가 부족합니다.")
     st.stop()
 
-# 전체 기간의 선형 회귀
-x_all = yearly["연도"].to_numpy(dtype=float)
-y_all = yearly["연평균기온"].to_numpy(dtype=float)
-slope_all, intercept_all = np.polyfit(x_all, y_all, 1)
-correlation = float(np.corrcoef(x_all, y_all)[0, 1])
-start_year = int(yearly["연도"].min())
+# 전체 기간의 회귀 직선
+a, b = np.polyfit(
+    yearly["연도"],
+    yearly["연평균기온"],
+    1
+)
+
+# 기울기를 100년당 기온 변화량으로 환산
+rise_all = a * 100
+
+# 최근 20년 데이터
 end_year = int(yearly["연도"].max())
-predicted_all = slope_all * x_all + intercept_all
+start_recent = end_year - 19
 
-# 최근 20년: 마지막 관측 연도 기준으로 20년 범위에 포함되는 연도
-recent_start = end_year - 19
-recent = yearly[yearly["연도"] >= recent_start]
+recent = yearly[
+    yearly["연도"] >= start_recent
+]
+
 if len(recent) >= 2:
-    x_recent = recent["연도"].to_numpy(dtype=float)
-    y_recent = recent["연평균기온"].to_numpy(dtype=float)
-    slope_recent, intercept_recent = np.polyfit(x_recent, y_recent, 1)
+    a_recent, b_recent = np.polyfit(
+        recent["연도"],
+        recent["연평균기온"],
+        1
+    )
+    rise_recent = a_recent * 100
 else:
-    slope_recent, intercept_recent = np.nan, np.nan
+    rise_recent = np.nan
 
-# 연간 기울기(℃/년)를 100년당 변화량(℃/100년)으로 환산
-rise_100_all = slope_all * 100
-rise_100_recent = slope_recent * 100 if np.isfinite(slope_recent) else np.nan
+# 기울기 비교를 화면 상단에 나란히 표시
+st.header("100년에 기온이 얼마나 오를까?")
 
-st.markdown("## 100년에 기온이 얼마나 오를까?")
-st.caption("기울기에 100을 곱해 100년당 기온 변화량으로 표시합니다. 양수는 상승, 음수는 하강을 뜻합니다.")
-m1, m2 = st.columns(2)
-with m1:
-    st.metric("전체 기간", f"{rise_100_all:+.2f}℃ / 100년")
-    st.caption(f"{start_year}~{end_year}년 · {len(yearly)}개 연도")
-with m2:
-    if np.isfinite(rise_100_recent):
-        st.metric("최근 20년", f"{rise_100_recent:+.2f}℃ / 100년")
-        st.caption(f"{int(recent['연도'].min())}~{int(recent['연도'].max())}년 · {len(recent)}개 연도")
-    else:
-        st.metric("최근 20년", "계산 불가")
-        st.caption("회귀 분석에 필요한 연도 데이터가 부족합니다.")
+col1, col2 = st.columns(2)
 
-if np.isfinite(rise_100_recent):
-    difference = rise_100_recent - rise_100_all
-    if difference > 0:
-        st.write(f"최근 20년의 기울기가 전체 기간보다 100년당 {difference:.2f}℃ 더 큽니다.")
-    elif difference < 0:
-        st.write(f"최근 20년의 기울기가 전체 기간보다 100년당 {abs(difference):.2f}℃ 더 작습니다.")
-    else:
-        st.write("최근 20년과 전체 기간의 기울기가 같습니다.")
-
-c1, c2, c3 = st.columns(3)
-c1.metric("회귀에 사용한 연도 수", f"{len(yearly):,}년")
-c2.metric("시작 연도", f"{start_year}년")
-c3.metric("끝 연도", f"{end_year}년")
-
-st.markdown("### 연도별 평균기온과 회귀 직선")
-fig = go.Figure()
-fig.add_trace(
-    go.Scatter(
-        x=yearly["연도"], y=yearly["연평균기온"],
-        mode="markers", name="연평균기온",
-        customdata=yearly[["관측일수"]].to_numpy(),
-        hovertemplate="연도: %{x}년<br>연평균기온: %{y:.2f}℃<br>관측일수: %{customdata[0]}일<extra></extra>",
+with col1:
+    st.metric(
+        label="전체 기간의 기온 변화",
+        value=f"{rise_all:+.2f}℃ / 100년"
     )
-)
-fig.add_trace(
-    go.Scatter(
-        x=yearly["연도"], y=predicted_all,
-        mode="lines", name="전체 기간 회귀 직선",
-        hovertemplate="연도: %{x}년<br>추정값: %{y:.2f}℃<extra></extra>",
+    st.caption(
+        f"{int(yearly['연도'].min())}~{end_year}년"
+        f" · {len(yearly)}개 연도"
     )
-)
-if len(recent) >= 2:
-    recent_line_x = np.arange(int(recent["연도"].min()), int(recent["연도"].max()) + 1)
-    recent_line_y = slope_recent * recent_line_x + intercept_recent
-    fig.add_trace(
-        go.Scatter(
-            x=recent_line_x, y=recent_line_y,
-            mode="lines", name="최근 20년 회귀 직선",
-            line=dict(dash="dash"),
-            hovertemplate="연도: %{x}년<br>최근 20년 추정값: %{y:.2f}℃<extra></extra>",
+
+with col2:
+    if np.isfinite(rise_recent):
+        st.metric(
+            label="최근 20년의 기온 변화",
+            value=f"{rise_recent:+.2f}℃ / 100년"
         )
-    )
-fig.update_layout(
-    xaxis_title="연도", yaxis_title="연평균기온 (℃)",
-    hovermode="x unified", legend_title_text="구분",
-    margin=dict(l=20, r=20, t=30, b=20),
+        st.caption(
+            f"{int(recent['연도'].min())}~"
+            f"{int(recent['연도'].max())}년"
+            f" · {len(recent)}개 연도"
+        )
+    else:
+        st.metric("최근 20년의 기온 변화", "계산 불가")
+
+# 두 기울기의 차이 설명
+if np.isfinite(rise_recent):
+    difference = rise_recent - rise_all
+
+    if difference > 0:
+        st.info(
+            f"최근 20년의 기울기가 전체 기간보다 "
+            f"100년당 {difference:.2f}℃ 더 큽니다."
+        )
+    elif difference < 0:
+        st.info(
+            f"최근 20년의 기울기가 전체 기간보다 "
+            f"100년당 {abs(difference):.2f}℃ 더 작습니다."
+        )
+    else:
+        st.info("두 기간의 기울기가 같습니다.")
+
+# 전체 기간과 최근 20년의 회귀 직선을 비교
+fig = px.scatter(
+    yearly,
+    x="연도",
+    y="연평균기온",
+    opacity=0.6,
+    title="연도별 평균기온과 회귀 직선"
 )
+
+fig.add_scatter(
+    x=yearly["연도"],
+    y=a * yearly["연도"] + b,
+    mode="lines",
+    name="전체 기간 회귀 직선"
+)
+
+if len(recent) >= 2:
+    recent_line_x = np.arange(
+        int(recent["연도"].min()),
+        int(recent["연도"].max()) + 1
+    )
+
+    recent_line_y = (
+        a_recent * recent_line_x + b_recent
+    )
+
+    fig.add_scatter(
+        x=recent_line_x,
+        y=recent_line_y,
+        mode="lines",
+        name="최근 20년 회귀 직선",
+        line=dict(dash="dash")
+    )
+
+fig.update_layout(
+    xaxis_title="연도",
+    yaxis_title="연평균기온 (℃)"
+)
+
 st.plotly_chart(fig, use_container_width=True)
 
-st.metric("상관계수 (연도와 연평균기온, 전체 기간)", f"{correlation:.3f}")
-if correlation > 0:
-    st.write("상관계수가 양수이므로, 전체 분석 기간에는 연도가 최근일수록 연평균기온이 높아지는 선형 경향이 나타납니다.")
-elif correlation < 0:
-    st.write("상관계수가 음수이므로, 전체 분석 기간에는 연도가 최근일수록 연평균기온이 낮아지는 선형 경향이 나타납니다.")
-else:
-    st.write("상관계수가 0이므로 전체 기간에서 연도와 연평균기온 사이의 선형 상관관계가 나타나지 않습니다.")
-
-st.markdown("### 예상 기온 확인")
-selected_year = st.slider(
-    "예상 기온을 확인할 연도",
-    min_value=1900, max_value=2100, value=2026, step=1,
+# 분석에 사용한 기간과 상관계수
+st.caption(
+    f"직선을 만든 해: {len(yearly)}개 "
+    f"({int(yearly['연도'].min())}~{end_year}년)"
 )
-estimated_temp = slope_all * selected_year + intercept_all
-st.markdown(
-    f"""
-    <div style="text-align:center; padding:1.2rem; border-radius:0.8rem;
-                background-color:rgba(128,128,128,0.10);">
-        <div style="font-size:1.1rem">{selected_year}년 예상 연평균기온</div>
-        <div style="font-size:3.2rem; font-weight:700">{estimated_temp:.2f}℃</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
+
+correlation = yearly["연도"].corr(
+    yearly["연평균기온"]
+)
+
+st.metric(
+    "연도와 연평균기온의 상관계수",
+    f"{correlation:.3f}"
+)
+
+# 연도별 예상 기온
+year = st.slider(
+    "예상 기온을 확인할 연도",
+    min_value=1900,
+    max_value=2100,
+    value=2045
+)
+
+predicted_temp = a * year + b
+
+st.metric(
+    f"{year}년 예상 연평균기온",
+    f"{predicted_temp:.1f}℃"
+)
+
+if year < yearly["연도"].min() or year > yearly["연도"].max():
+    st.info(
+        "학습 범위 밖의 외삽값입니다. "
+        "실제 미래 기온을 보장하지 않습니다."
+    )
+
+st.caption(
+    "100년당 기온 변화량은 회귀 직선의 기울기에 "
+    "100을 곱해 계산한 통계적 추세입니다."
+)
+```
